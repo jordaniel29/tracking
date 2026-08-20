@@ -1,0 +1,19 @@
+[project]
+name = "piaspace-trt-runtime"
+version = "0.1.0"
+description = "Shared TensorRT runner + HF→ONNX→engine provisioning helpers for the piaspace-* encoder packages."
+authors = [{ name = "PIASPACE", email = "dev@piaspace.com" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "torch>=2.5",
+    "huggingface_hub>=0.25",
+    "requests>=2.32",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

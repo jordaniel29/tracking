@@ -1,0 +1,13 @@
+.env
+.venv/
+runs/
+__pycache__/
+*.egg-info/
+*.pyc
+.DS_Store
+
+# Model artefacts and input video are delivered separately, never committed.
+assets/models/*
+!assets/models/README.md
+assets/data/*
+!assets/data/README.md

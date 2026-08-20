@@ -1,0 +1,39 @@
+[project]
+name = "pia-tracking"
+version = "0.1.0"
+description = "Single-camera person detection + ReID + tracking (YOLO26 + CLIP-ReID + BoostTrack++)"
+# 3.12 exactly: the pinned numpy<2 and the torch cu124 wheels have no 3.13+ builds.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "opencv-python-headless>=4.10",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "scipy>=1.11",  # tracker's optional `assignment: hungarian` solver
+    # Vendored model packages, installed from src/models/ by
+    # scripts/0_setup_env.sh (see README): piaspace-trt-runtime ·
+    # piaspace-clip-reid · piaspace-yolo26
+]
+
+[project.optional-dependencies]
+# TensorRT FP16 inference. The engines are built on the TARGET machine — a TRT
+# engine is compiled per GPU architecture and is not portable.
+# <11: TensorRT 11 removed BuilderFlag.FP16 (weakly-typed networks), which the
+# engine-build path in piaspace-trt-runtime relies on.
+trt = ["tensorrt>=10.0,<11"]
+# Downloading the ONNX artefacts from Hugging Face.
+hf = ["huggingface_hub>=0.25"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# Only this package. src/models/* are separately-installable packages with
+# their own pyproject.toml and must not be swept into this distribution.
+include = ["pia_tracking*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

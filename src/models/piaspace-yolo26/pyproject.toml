@@ -1,0 +1,18 @@
+[project]
+name = "piaspace-yolo26"
+version = "0.1.0"
+description = "PIASPACE YOLO26 object detector wrapper with class-group routing + TRT auto-provision."
+authors = [{ name = "PIASPACE", email = "dev@piaspace.com" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "ultralytics>=8.4.34",
+    "piaspace-trt-runtime>=0.1",  # shared TRTRunner + HF→ONNX→engine provisioning
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

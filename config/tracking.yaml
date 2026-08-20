@@ -1,0 +1,61 @@
+# Single-camera person tracking: detector + ReID + tracker
+# Note: Cross-camera identity, alarms, event buses, and metadata stores are deliberately absent.
+
+# ── Detector ────────────────────────────────────────────────────────────────
+detector:
+  backend: yolo26
+  model: yolo26l_v6.3.fp16.engine        # YOLO26-L v6.3 (person-only), TensorRT FP16
+  weights_dir: ./assets/models
+  device: cuda:0
+  
+  conf: 0.4                              # Detections below this never reach the tracker
+  iou: 0.5
+  imgsz: 640                             # ⚠️ CANNOT be raised against a TRT engine without rebuilding
+  min_box_size: 16                       # Px floor on the short side; drops tiny/distant boxes
+  
+  target_classes:
+    person: [0]                          
+
+# ── ReID ────────────────────────────────────────────────────────────────────
+# Fused into tracker association cost. Remove this block (or pass --no-reid) to track on geometry alone.
+reid:
+  person:
+    backend: clip_reid
+    clip_reid:
+      engine_path: ./assets/models/clipreid_person.fp16.engine  # CLIP-ReID ViT-B/16, 768-d L2-normalised, TRT FP16
+      backbone: ViT-B-16
+      device: cuda:0
+      input_size: [256, 128]             # 256x128 crops
+      stride: 12
+
+# ── Tracker (BoostTrack++) ──────────────────────────────────────────────────
+# ⚠️ These gates are coupled to THIS detector's confidence distribution. Re-tune if the detector changes.
+tracker:
+  type: boost_track
+  params:
+    # --- Core Tracking & Association ---
+    det_thresh: 0.7                      # Min confidence to enter association
+    new_track_thresh: 0.75               # ⭐ Min confidence to SPAWN a new track (the recall knob)
+    min_hits: 3                          # Frames before a new track is reported
+    max_age: 75                          # Frames a lost track survives (⚠️ wall-clock meaning scales with your actual fps)
+    
+    # --- Appearance & Geometry ---
+    sim_threshold: 0.25                  # Appearance-match acceptance gate
+    iou_floor: 0.25                      # Minimum geometric overlap to consider a match
+    appearance_weight: 0.5               # ReID's share of the cost: sim = (1-w)*geom + w*appearance
+    
+    # --- Advanced BoostTrack++ Tuning ---
+    use_sb: true
+    use_mhd: true
+    use_mhd_gate: false
+    mhd_gate: 9.4877
+    use_shape: true
+    use_tai: true
+    tai_thr: 0.45
+    use_vt: true
+    soft_alpha: 0.65
+    soft_q: 1.5
+    vt_beta_high: 0.95
+    vt_beta_low: 0.8
+    vt_gamma: 0.0075
+    ema_alpha: 0.9

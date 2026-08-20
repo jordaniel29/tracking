@@ -1,0 +1,33 @@
+[project]
+name = "piaspace-clip-reid"
+version = "0.2.0"
+description = "PIASPACE CLIP-ReID image encoder (ViT-B/16, ONNX→TRT, PyTorch fallback). Image-only person/vehicle re-identification."
+authors = [{ name = "PIASPACE", email = "dev@piaspace.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.5",
+    "torchvision>=0.20",
+    "numpy>=1.26,<2.0",
+    "opencv-python-headless>=4.10",
+    "piaspace-trt-runtime>=0.1",  # shared TRTRunner + HF→ONNX→engine provisioning
+]
+
+[project.optional-dependencies]
+# Production GPU inference (TRT engine path). Install via:
+#   pip install -e "src/models/piaspace-clip-reid[trt]"
+trt = [
+    "tensorrt>=10.0",
+]
+# Engine auto-provisioning: download ONNX from PIA-SPACE-LAB/SSAVE (gated).
+# Install via:
+#   pip install -e "src/models/piaspace-clip-reid[hf]"
+hf = [
+    "huggingface_hub>=0.24",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
