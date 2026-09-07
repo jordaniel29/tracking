@@ -19,11 +19,9 @@ detector:
     person: [0]
 
 # ── ReID — fine-tuned CLIP-ReID person model (ViT-B/16, 768-d) ─────────────
-# Not provisioned by scripts/1_download_models.sh. Build it on this GPU (TRT
-# engines are not portable) with
-#   piaspace_clip_reid.engine.ensure_engine_by_filename(
-#       "combined+scenario1-5_clipreid_ViT-B-16_20.fp16.engine",
-#       weights_dir="assets/models", token=HF_TOKEN)
+# Provision with:  bash scripts/1_download_models.sh --ft
+# (a separate ONNX download + engine build, so it is opt-in; TRT engines are
+# not portable and must be built on the GPU that will run them).
 reid:
   person:
     backend: clip_reid

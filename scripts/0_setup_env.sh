@@ -79,8 +79,9 @@ pip install -e ./src/models/piaspace-clip-reid
 pip install -e ./src/models/piaspace-yolo26
 
 echo "==> Installing this package"
-EXTRAS="hf"
-if [[ "$WITH_TRT" == "1" ]]; then EXTRAS="hf,trt"; fi
+# dev = pytest, so `python -m pytest tests` works straight after setup.
+EXTRAS="hf,dev"
+if [[ "$WITH_TRT" == "1" ]]; then EXTRAS="hf,trt,dev"; fi
 pip install -e ".[${EXTRAS}]"
 
 if [[ "$WITH_TRT" == "1" ]]; then

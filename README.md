@@ -25,6 +25,7 @@ bash scripts/0_setup_env.sh --trt      # conda env, PyTorch (CUDA), TensorRT, mo
 conda activate tracking
 cp .env.example .env                 # fill in HF_TOKEN if you were issued one
 bash scripts/1_download_models.sh      # fetch the ONNX files, build the TRT engines
+                                       #   (add --ft for the fine-tuned ReID engine too)
 bash scripts/2_run_inference.sh assets/data/03_scenarios/scenario_01   # one set of cameras → global ids
 ```
 
@@ -47,7 +48,7 @@ config/
 .env.example    template for .env — HF_TOKEN + optional runtime defaults
 scripts/
   0_setup_env.sh          conda env + dependencies + GPU/TensorRT verification
-  1_download_models.sh    fetch the ONNX files, build the TensorRT engines
+  1_download_models.sh    fetch the ONNX files, build the TensorRT engines (--ft adds the fine-tuned ReID one)
   2_run_inference.sh      convenience wrapper around infer.py (MODE=multi|single)
 src/
   pia_tracking/           one folder per stage — data flows camera → detection → tracking → fusion → utils
