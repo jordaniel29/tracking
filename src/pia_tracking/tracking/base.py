@@ -66,10 +66,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ._matching import iou_matrix as _iou_matrix
+from .matching import iou_matrix as _iou_matrix
 
 if TYPE_CHECKING:
-    from ..reid import ReIDBackend
+    from ..reid.base import ReIDBackend
     from ..schemas import Detection, Track
 
 

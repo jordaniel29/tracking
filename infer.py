@@ -1,27 +1,51 @@
-"""Single-camera person tracking over a video file or a directory of them.
+"""Person tracking over video files — several cameras with shared global ids
+(the default), or each clip on its own.
 
-    python infer.py --video sample.mp4 --out runs/demo
-    python infer.py --videos-dir videos/ --out runs/demo --config config/tracking.yaml
+    python infer.py --videos-dir assets/data/03_scenarios/scenario_01 --out runs/s01   # multi (default)
+    python infer.py --video cam8.mp4 cam9.mp4 --out runs/pair --device cuda:0          # multi, explicit files
+    python infer.py --mode single --videos-dir assets/data --out runs/demo             # each clip alone
+    python infer.py --mode single --video clip.mp4 --out runs/demo --no-reid
 
-Writes per clip:
-    <out>/<stem>.mp4              annotated video (box + id label, colour per id)
-    <out>/preds/<stem>.txt        MOTChallenge rows: frame,id,x,y,w,h,conf,-1,-1,-1
-    <out>/preds/<stem>_dets.txt   raw pre-tracking detections (with --show-all-dets)
-    <out>/run_summary.json        config actually used + per-clip throughput
+--mode multi   Every video is one camera and the cameras were recorded together (frame k
+               of each is the same instant). The per-camera pipeline runs on all of them
+               at once and one GlobalIDService links the tracks: the same person carries
+               the same G-<n> on every camera. Also valid for ONE video — re-entries on
+               that camera are then linked.
+--mode single  Each clip is tracked on its own with per-clip local ids. The `global_id:`
+               config block is ignored.
+--mode render  No models: draw an EXISTING run's predictions (--out is that run's directory,
+               --videos-dir/--video its source videos) onto the frames and write the MP4s —
+               e.g. for a run made with --no-video. Multi-camera runs get G-<gid> labels
+               from global_ids.json, single-camera runs local ids.
+
+    python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/compare/trace_ft/scenario_01
+
+Files matching --exclude (default "grid_*", a composite view) are skipped in every mode.
+
+Writes:
+    <out>/<stem>.mp4               annotated video. multi: G-<gid> label, one colour per global
+                                   id on every camera, grey + local id until the id is known —
+                                   labels are what was known AT that frame; --final-labels
+                                   re-renders with the final ids. single: id=<n>, colour per id.
+    <out>/preds/<stem>.txt         MOTChallenge rows (frame,id,x,y,w,h,conf,-1,-1,-1), local id
+    <out>/preds/<stem>_global.txt  the same rows with the global id (multi; unlabelled tracks omitted)
+    <out>/preds/<stem>_dets.txt    raw pre-tracking detections (--show-all-dets)
+    <out>/global_ids.json          identities → (camera, local id) members; local→global map (multi)
+    <out>/run_summary.json         config used + per-clip throughput (+ identity counts in multi)
 
 GPU selection: use `--device cuda:N`. Do NOT rely on a shell `CUDA_VISIBLE_DEVICES` —
 Ultralytics rewrites that variable internally when it parses the device string.
+
+The work lives in the package: pia_tracking.runners (run_single / run_multi). This file
+only parses arguments and builds the models.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
-import time
 from pathlib import Path
-from typing import Any
 
 # Ensure local 'src' is available if the package isn't installed natively.
 try:
@@ -29,280 +53,113 @@ try:
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-import cv2
-import yaml
-
-from pia_tracking.pipeline import TrackingPipeline
-from pia_tracking.visualize import MOTWriter, VideoWriter, draw_tracks
+from pia_tracking import build_detector, build_reid, load_config
+from pia_tracking.camera import DEFAULT_EXCLUDE, discover_videos
+from pia_tracking.runners import RunOptions, run_multi, run_render, run_single
 
 logger = logging.getLogger("infer")
-VIDEO_SUFFIXES = (".mp4", ".avi", ".mkv", ".mov", ".m4v")
 
-
-# ── Configuration & Initialization ──────────────────────────────────────────
-
-def load_config(path: Path, device: str | None) -> dict[str, Any]:
-    """Loads the YAML config and overrides device allocations if requested."""
-    config = yaml.safe_load(path.read_text())
-    
-    if "detector" not in config or "tracker" not in config:
-        raise SystemExit(f"Error: Missing 'detector' or 'tracker' block in {path}")
-
-    # Apply device overrides cleanly
-    if device:
-        config["detector"]["device"] = device
-        
-        reid_cfg = config.get("reid", {}).get("person", {})
-        reid_backend = reid_cfg.get("backend")
-        if reid_backend and reid_backend in reid_cfg:
-            reid_cfg[reid_backend]["device"] = device
-
-    return config
-
-
-def build_detector(cfg: dict[str, Any]) -> Any:
-    from piaspace_yolo26 import YOLO26Detector
-    return YOLO26Detector(cfg)
-
-
-def build_reid(reid_cfg: dict[str, Any]) -> Any | None:
-    """Build the person ReID embedder, or return None if omitted."""
-    person_cfg = (reid_cfg or {}).get("person")
-    if not person_cfg:
-        return None
-        
-    backend = person_cfg.get("backend", "clip_reid")
-    if backend != "clip_reid":
-        raise SystemExit(
-            f"Unsupported ReID backend: '{backend}'. This package ships with "
-            "'clip_reid' only. Remove the `reid:` block to track on geometry alone."
-        )
-        
-    from piaspace_clip_reid import CLIPReIDEmbedder
-    return CLIPReIDEmbedder(person_cfg["clip_reid"])
-
-
-def build_tracker(cfg: dict[str, Any], reid: Any | None) -> Any:
-    tracker_type = cfg.get("type")
-    if tracker_type != "boost_track":
-        raise SystemExit(
-            f"Unsupported tracker: '{tracker_type}'. This package ships with "
-            "'boost_track' (BoostTrack++) only."
-        )
-        
-    from pia_tracking.tracker.boosttrack import BoostTrackTracker
-    return BoostTrackTracker(reid=reid, **(cfg.get("params") or {}))
-
-
-def discover_videos(args: argparse.Namespace) -> list[Path]:
-    """Finds all valid video files based on CLI arguments."""
-    if args.video:
-        if not args.video.is_file():
-            raise SystemExit(f"Video not found: {args.video}")
-        return [args.video]
-        
-    videos = sorted(p for p in args.videos_dir.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)
-    if not videos:
-        raise SystemExit(f"No videos found in {args.videos_dir} matching {VIDEO_SUFFIXES}")
-        
-    return videos
-
-
-# ── Core Inference Loop ─────────────────────────────────────────────────────
-
-def run_clip(
-    video: Path,
-    *,
-    detector: Any,
-    reid: Any | None,
-    tracker_cfg: dict[str, Any],
-    out_dir: Path,
-    max_frames: int | None,
-    show_conf: bool,
-    show_all_dets: bool,
-    no_video: bool,
-) -> dict[str, Any]:
-    """Tracks a single clip, renders output files, and returns execution stats."""
-    cap = cv2.VideoCapture(str(video))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video stream: {video}")
-        
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-
-    # Fresh tracker state per clip. Models (Detector/ReID) are shared.
-    pipeline = TrackingPipeline(
-        detector=detector,
-        tracker=build_tracker(tracker_cfg, reid),
-        reid=reid,
-        camera_id=video.stem,
-    )
-    
-    mot_writer = MOTWriter()
-    video_writer = None if no_video else VideoWriter(out_dir / f"{video.stem}.mp4", fps)
-    raw_detections: list[str] = []
-
-    start_time = time.perf_counter()
-    frame_idx = 0
-
-    try:
-        while True:
-            success, frame = cap.read()
-            if not success or (max_frames is not None and frame_idx >= max_frames):
-                break
-                
-            result = pipeline.process_frame(frame, frame_idx)
-            mot_writer.add(frame_idx, result.tracks)
-            
-            if show_all_dets:
-                for d in result.detections:
-                    x1, y1, x2, y2 = d.bbox
-                    raw_detections.append(
-                        f"{frame_idx},-1,{x1:.2f},{y1:.2f},{x2 - x1:.2f},{y2 - y1:.2f},"
-                        f"{d.confidence:.4f},-1,-1,-1\n"
-                    )
-                    
-            if video_writer is not None:
-                annotated_frame = draw_tracks(frame, result.tracks, show_conf=show_conf, label=video.stem)
-                video_writer.write(annotated_frame)
-                
-            frame_idx += 1
-    finally:
-        cap.release()
-        if video_writer is not None:
-            video_writer.close()
-
-    elapsed = time.perf_counter() - start_time
-
-    # Write textual outputs
-    preds_dir = out_dir / "preds"
-    preds_dir.mkdir(parents=True, exist_ok=True)
-    mot_writer.write(preds_dir / f"{video.stem}.txt")
-    
-    if show_all_dets:
-        (preds_dir / f"{video.stem}_dets.txt").write_text("".join(raw_detections))
-
-    # Compile and log statistics
-    stats = pipeline.stats
-    fps_rate = round(stats.frames / elapsed, 2) if elapsed > 0 else 0.0
-    
-    logger.info(
-        "clip_done %s frames=%d dets=%d rows=%d ids=%d coverage=%.1f%% fps=%.1f",
-        video.name, stats.frames, stats.detections, stats.track_rows, 
-        len(stats.track_ids), 100 * stats.coverage, fps_rate,
-    )
-    
-    return {
-        "video": video.name,
-        "camera_id": video.stem,
-        "frames": stats.frames,
-        "detections": stats.detections,
-        "track_rows": stats.track_rows,
-        "track_ids": len(stats.track_ids),
-        "detection_coverage": round(stats.coverage, 4),
-        "elapsed_sec": round(elapsed, 2),
-        "fps": fps_rate,
-    }
-
-
-# ── CLI & Main ──────────────────────────────────────────────────────────────
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="infer.py",
-        description="Single-camera person detection + ReID + tracking.",
+        description="Person detection + ReID + tracking — multi-camera with shared global ids, or per clip.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    
+    parser.add_argument(
+        "--mode", choices=["multi", "single", "render"], default="multi",
+        help="multi: every video is a camera, tracks linked across cameras by global id. "
+        "single: each clip on its own with local ids. "
+        "render: no models — draw an existing run's predictions (in --out) onto the videos.",
+    )
+    _add_io_args(parser)
+    _add_mode_args(parser)
+
+    args = parser.parse_args(argv)
+    if args.mode == "multi" and args.no_reid:
+        parser.error("--no-reid is single-mode only: global ids link on appearance")
+    if args.mode != "multi" and (args.no_checkpoints or args.final_labels):
+        parser.error("--no-checkpoints / --final-labels apply to --mode multi only")
+    if args.mode == "render" and (args.no_reid or args.no_video or args.show_all_dets):
+        parser.error("--mode render only draws: --no-reid / --no-video / --show-all-dets do not apply")
+    return args
+
+
+def _add_io_args(parser: argparse.ArgumentParser) -> None:
     src = parser.add_mutually_exclusive_group(required=True)
-    src.add_argument("--video", type=Path, help="Path to a single video file.")
-    src.add_argument("--videos-dir", type=Path, help="Directory containing multiple videos.")
-    
+    src.add_argument("--video", type=Path, nargs="+", help="Video file(s).")
+    src.add_argument("--videos-dir", type=Path, help="Directory containing the videos.")
+    parser.add_argument(
+        "--exclude", nargs="*", default=list(DEFAULT_EXCLUDE), metavar="GLOB",
+        help="Filename patterns to skip (e.g. a composite grid view).",
+    )
     parser.add_argument("--out", type=Path, required=True, help="Output directory.")
     parser.add_argument("--config", type=Path, default=Path("config/tracking.yaml"))
     parser.add_argument("--device", type=str, default=None, help="e.g. cuda:0. Overrides config.")
-    parser.add_argument("--max-frames", type=int, default=None, help="Cap frames processed per clip.")
-    parser.add_argument("--no-reid", action="store_true", help="Track on geometry alone (faster, more ID switches).")
+    parser.add_argument("--max-frames", type=int, default=None, help="Cap frames processed per video.")
     parser.add_argument("--no-video", action="store_true", help="Skip MP4 rendering; write MOT files only.")
     parser.add_argument("--show-conf", action="store_true", help="Append confidence scores to ID labels.")
     parser.add_argument("--show-all-dets", action="store_true", help="Write raw pre-tracking detections to disk.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    
-    return parser.parse_args(argv)
+
+
+def _add_mode_args(parser: argparse.ArgumentParser) -> None:
+    single = parser.add_argument_group("single mode")
+    single.add_argument(
+        "--no-reid", action="store_true",
+        help="Track on geometry alone (faster, more ID switches). single only.",
+    )
+    multi = parser.add_argument_group("multi mode")
+    multi.add_argument(
+        "--no-checkpoints", action="store_true",
+        help="Assign ids only when a track ends (no mid-track checkpoint). multi only.",
+    )
+    multi.add_argument(
+        "--final-labels", action="store_true",
+        help="Render the MP4s after tracking with the final (revised) global ids, so they match "
+        "preds/<cam>_global.txt. Default: labels as known at each frame, like a live view. multi only.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=args.log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    
-    config = load_config(args.config, args.device)
-    videos = discover_videos(args)
-    
-    # Ensure root output directory exists
-    args.out.mkdir(parents=True, exist_ok=True)
-
-    logger.info("start videos=%d config=%s", len(videos), args.config)
-    
-    # Initialize models once to prevent reloading TRT engines per video
-    detector = build_detector(config["detector"])
-    reid = None if args.no_reid else build_reid(config.get("reid", {}))
-    
-    logger.info(
-        "models_ready detector=%s reid=%s tracker=%s",
-        config["detector"].get("model"), bool(reid), config["tracker"].get("type"),
-    )
-
-    clips_stats: list[dict[str, Any]] = []
-    failed_clips = 0
-    
-    for i, video in enumerate(videos, 1):
-        logger.info("clip (%d/%d) %s", i, len(videos), video.name)
-        try:
-            stats = run_clip(
-                video,
-                detector=detector,
-                reid=reid,
-                tracker_cfg=config["tracker"],
-                out_dir=args.out,
-                max_frames=args.max_frames,
-                show_conf=args.show_conf,
-                show_all_dets=args.show_all_dets,
-                no_video=args.no_video,
+    try:
+        videos = discover_videos(videos=args.video, videos_dir=args.videos_dir, exclude=args.exclude)
+        if args.mode == "render":
+            logger.info("start mode=render videos=%d run=%s", len(videos), args.out)
+            return run_render(
+                videos, out_dir=args.out, opts=RunOptions(max_frames=args.max_frames, show_conf=args.show_conf)
             )
-            clips_stats.append(stats)
-        except Exception:
-            logger.exception("clip_failed %s", video.name)
-            failed_clips += 1
 
-    # Generate Run Summary
-    total_frames = sum(c["frames"] for c in clips_stats)
-    total_sec = sum(c["elapsed_sec"] for c in clips_stats)
-    mean_fps = round(total_frames / total_sec, 2) if total_sec > 0 else None
-    
-    summary = {
-        "config_path": str(args.config),
-        "detector": config["detector"].get("model"),
-        "detector_conf": config["detector"].get("conf"),
-        "detector_imgsz": config["detector"].get("imgsz"),
-        "tracker": config["tracker"].get("type"),
-        "tracker_params": config["tracker"].get("params", {}),
-        "reid": (config.get("reid", {}).get("person") if reid else None),
-        "device": args.device or config["detector"].get("device"),
-        "rendered_video": not args.no_video,
-        "clips_ok": len(clips_stats),
-        "clips_failed": failed_clips,
-        "total_frames": total_frames,
-        "mean_fps": mean_fps,
-        "clips": clips_stats,
-    }
-    
-    (args.out / "run_summary.json").write_text(json.dumps(summary, indent=2, default=str) + "\n")
-    
-    logger.info(
-        "done ok=%d failed=%d frames=%d mean_fps=%s out=%s",
-        len(clips_stats), failed_clips, total_frames, mean_fps, args.out,
-    )
-    
-    return 0 if failed_clips == 0 else 1
+        config = load_config(args.config, args.device)
+        args.out.mkdir(parents=True, exist_ok=True)
+        logger.info("start mode=%s videos=%d config=%s", args.mode, len(videos), args.config)
+
+        # Models are built once and shared by every clip / camera; only the
+        # tracker is per camera (it owns the cross-frame state).
+        detector = build_detector(config["detector"])
+        reid = None if args.no_reid else build_reid(config.get("reid"))
+        logger.info(
+            "models_ready detector=%s reid=%s tracker=%s",
+            config["detector"].get("model"), reid is not None, config["tracker"].get("type"),
+        )
+
+        opts = RunOptions(
+            max_frames=args.max_frames,
+            render_video=not args.no_video,
+            show_conf=args.show_conf,
+            dump_detections=args.show_all_dets,
+            checkpoints=not args.no_checkpoints,
+            final_labels=args.final_labels,
+        )
+        run = run_multi if args.mode == "multi" else run_single
+        return run(
+            videos, config=config, config_path=args.config, device=args.device,
+            detector=detector, reid=reid, out_dir=args.out, opts=opts,
+        )
+    except (ValueError, FileNotFoundError, NotADirectoryError) as e:
+        raise SystemExit(f"error: {e}") from e
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
-"""Detection and Track — the two data contracts the pipeline passes around —
-plus normalization of raw detector output into them.
+"""Detection and Track — the two data contracts the pipeline passes around.
+
+Raw detector output is normalised into ``Detection`` by
+``pia_tracking.detection.to_schema_detection``.
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ class Detection(BaseModel):
 
 
 class Track(BaseModel):
-    """Single-camera track. ``track_id`` is stable within ONE camera."""
+    """Single-camera track. ``track_id`` is stable within ONE camera;
+    ``global_id``, when set, is stable across cameras."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -43,24 +46,12 @@ class Track(BaseModel):
             "lost=missed but within track buffer."
         ),
     )
-
-
-def to_schema_detection(det: object) -> Detection:
-    """Normalize any detector's output to ``Detection``.
-
-    Detector wrappers name the same value differently (``piaspace_yolo26``
-    emits ``.conf``; this schema uses ``.confidence``), while the tracker reads
-    ``.confidence`` — so anything piped into a tracker must be normalized
-    first. Already-schema Detection instances pass through unchanged.
-    """
-    if isinstance(det, Detection):
-        return det
-    confidence = getattr(det, "confidence", None)
-    if confidence is None:
-        confidence = getattr(det, "conf", 0.0)
-    return Detection(
-        bbox=det.bbox,
-        class_id=det.class_id,
-        confidence=float(confidence),
-        class_name=getattr(det, "class_name", None),
+    global_id: int | None = Field(
+        None,
+        description=(
+            "Cross-camera identity from pia_tracking.fusion. None in single-camera "
+            "runs, and in multi-camera runs until the worker has enough evidence to "
+            "name the person."
+        ),
     )
+

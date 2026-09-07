@@ -1,58 +1,70 @@
 #!/usr/bin/env bash
 # Environment setup for single-camera person tracking.
 #
-#   bash scripts/0_setup_env.sh                 # venv + CPU/GPU deps + model packages
-#   bash scripts/0_setup_env.sh --trt           # also install TensorRT (needed for FP16 engines)
-#   bash scripts/0_setup_env.sh --venv .myenv   # custom venv path
-#   PYTHON=/path/to/python3.12 bash scripts/0_setup_env.sh --trt   # explicit interpreter
+#   bash scripts/0_setup_env.sh                # conda env "tracking" + deps + model packages
+#   bash scripts/0_setup_env.sh --trt          # also install TensorRT (needed for FP16 engines)
+#   bash scripts/0_setup_env.sh --env myenv    # use/create a differently named conda env
 #
-# Needs Python 3.12 EXACTLY — the pinned stack (numpy<2, torch cu124 wheels)
-# has no 3.13+/3.14 builds. Also assumes an NVIDIA GPU with a recent driver.
+# Creates the conda env if it is missing and installs into it, so there is
+# nothing to activate beforehand. Requires conda (miniforge/miniconda) on PATH.
+#
+# Pins Python 3.12 EXACTLY — the pinned stack (numpy<2, torch cu124 wheels) has
+# no 3.13+/3.14 builds. Also assumes an NVIDIA GPU with a recent driver.
 set -euo pipefail
 
-VENV=".venv"
+ENV_NAME="tracking"
+PY_VERSION="3.12"
 WITH_TRT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --trt)  WITH_TRT=1; shift ;;
-    --venv) VENV="$2"; shift 2 ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    --trt) WITH_TRT=1; shift ;;
+    --env) ENV_NAME="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 cd "$(dirname "$0")/.."   # repo root
 
-# ── Interpreter: $PYTHON override → python3.12 on PATH → python3 if it is 3.12
-is_py312() { "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; }
-PYBIN=""
-for cand in "${PYTHON:-}" python3.12 python3; do
-  [[ -n "$cand" ]] || continue
-  command -v "$cand" >/dev/null 2>&1 || continue
-  if is_py312 "$cand"; then PYBIN="$(command -v "$cand")"; break; fi
-done
-if [[ -z "$PYBIN" ]]; then
-  echo "ERROR: Python 3.12 is required and was not found (python3 is $(python3 --version 2>&1 || echo missing))." >&2
-  echo "  Install one and point the script at it, e.g. with conda:" >&2
-  echo "    conda create -n py312 python=3.12" >&2
-  echo "    PYTHON=\$(conda run -n py312 which python) bash scripts/0_setup_env.sh --trt" >&2
+# Some images (Backend.AI) export PYTHONPATH=~/.local/lib/python3.12/site-packages.
+# Left set, that directory shadows the env's own packages in every python/pip
+# call below — the env then works here and breaks in a clean shell, or vice versa.
+unset PYTHONPATH
+
+if ! command -v conda >/dev/null 2>&1; then
+  echo "ERROR: conda not found on PATH." >&2
+  echo "  Install miniforge, or re-attach an existing install for this shell:" >&2
+  echo "    source /path/to/miniforge3/etc/profile.d/conda.sh" >&2
   exit 1
 fi
-echo "==> Using $PYBIN ($("$PYBIN" --version 2>&1))"
 
-if [[ -e "$VENV" ]]; then
-  if ! is_py312 "$VENV/bin/python"; then
-    echo "ERROR: $VENV exists but is not a Python 3.12 venv. Remove it and re-run:" >&2
-    echo "    rm -rf $VENV" >&2
-    exit 1
-  fi
-  echo "==> Reusing venv at $VENV"
-else
-  echo "==> Creating venv at $VENV"
-  "$PYBIN" -m venv "$VENV"
-fi
+# `conda activate` is a shell function, not the conda binary — it only exists
+# after this is sourced, which `conda init` normally does from ~/.bashrc.
 # shellcheck disable=SC1091
-source "$VENV/bin/activate"
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+# First column of `conda env list`, minus the header comments and the `*`/`+`
+# markers conda puts on the active and frozen envs.
+env_exists() { conda env list | sed 's/\*//' | awk 'NF>0 && $1 !~ /^#/ {print $1}' | grep -qxF "$1"; }
+
+if env_exists "$ENV_NAME"; then
+  echo "==> Reusing conda env $ENV_NAME"
+else
+  echo "==> Creating conda env $ENV_NAME (python=$PY_VERSION)"
+  conda create -y -n "$ENV_NAME" "python=$PY_VERSION"
+fi
+
+conda activate "$ENV_NAME"
+
+# A pre-existing env may be on the wrong Python; the pinned wheels need 3.12.
+if ! python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' 2>/dev/null; then
+  echo "ERROR: conda env $ENV_NAME is $(python --version 2>&1), not Python $PY_VERSION." >&2
+  echo "  Recreate it, or use a different name with --env:" >&2
+  echo "    conda env remove -n $ENV_NAME && bash scripts/0_setup_env.sh --env $ENV_NAME --trt" >&2
+  exit 1
+fi
+echo "==> Installing into $ENV_NAME ($(python --version 2>&1) at $(command -v python))"
+
 python -m pip install --upgrade pip wheel setuptools
 
 echo "==> Installing PyTorch (CUDA build)"
@@ -99,8 +111,9 @@ cat <<EOF
 
 ==> Done. Next steps:
 
-  source $VENV/bin/activate
+  conda activate $ENV_NAME
   bash scripts/1_download_models.sh      # fetch model files into assets/models
-  python infer.py --video <clip.mp4> --out runs/demo --device cuda:0
+  python infer.py --videos-dir <camera dir> --out runs/demo --device cuda:0     # multi-camera (default)
+  python infer.py --mode single --video <clip.mp4> --out runs/demo             # one clip on its own
 
 EOF

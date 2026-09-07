@@ -22,15 +22,10 @@ from typing import Any
 
 import numpy as np
 
-from .schemas import Detection, Track, to_schema_detection
+from ..detection import to_schema_detection
+from ..schemas import Detection, Track
 
-logger = logging.getLogger("pia_tracking.pipeline")
-
-# Minimum crop side, in pixels, that will be handed to ReID. Below this the
-# 256x128 CLIP-ReID input is mostly interpolation and the embedding is noise, so
-# such detections are tracked on geometry alone rather than poisoning the
-# appearance channel.
-MIN_REID_CROP_PX = 8
+logger = logging.getLogger("pia_tracking.tracking.pipeline")
 
 
 @dataclass
@@ -63,27 +58,6 @@ class RunStats:
         return self.track_rows / self.detections if self.detections else 0.0
 
 
-def crop_bgr(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray | None:
-    """Clamped crop for one bbox, or None when it is degenerate.
-
-    Not used by :class:`TrackingPipeline` — the tracker cuts its own crops for the
-    appearance channel. Exposed for callers that need person crops for their own
-    purposes (thumbnails, an external classifier).
-
-    Detector boxes can run past the frame edge (a person half out of view), so
-    clamping here rather than trusting the box avoids a zero-width slice that
-    would make the whole ReID batch fail.
-    """
-    h, w = frame.shape[:2]
-    x1 = max(0, int(bbox[0]))
-    y1 = max(0, int(bbox[1]))
-    x2 = min(w, int(bbox[2]))
-    y2 = min(h, int(bbox[3]))
-    if x2 - x1 < MIN_REID_CROP_PX or y2 - y1 < MIN_REID_CROP_PX:
-        return None
-    return frame[y1:y2, x1:x2]
-
-
 class TrackingPipeline:
     """Detector + ReID + tracker for ONE camera.
 
@@ -108,6 +82,16 @@ class TrackingPipeline:
         self._reid = reid
         self._camera_id = camera_id
         self.stats = RunStats()
+
+    @property
+    def tracker(self) -> Any:
+        """The tracker — exposed so a multi-camera worker can read its
+        ``frame_embeddings()`` right after ``process_frame``."""
+        return self._tracker
+
+    @property
+    def reid(self) -> Any | None:
+        return self._reid
 
     def process_frame(self, frame: np.ndarray, frame_idx: int) -> FrameResult:
         """Run one frame end to end and return its tracks."""

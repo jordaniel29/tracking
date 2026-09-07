@@ -1,5 +1,5 @@
-# Single-camera person tracking: detector + ReID + tracker
-# Note: Cross-camera identity, alarms, event buses, and metadata stores are deliberately absent.
+# Person tracking: detector + ReID + tracker, plus cross-camera global ids (multi-camera runs only).
+# Note: alarms, event buses, and metadata stores are deliberately absent.
 
 # ── Detector ────────────────────────────────────────────────────────────────
 detector:
@@ -59,3 +59,29 @@ tracker:
     vt_beta_low: 0.8
     vt_gamma: 0.0075
     ema_alpha: 0.9
+
+# ── Global ID (cross-camera identity) ───────────────────────────────────────
+# Used by `infer.py --mode multi` (the default); ignored in --mode single. One in-memory
+# service is shared by every camera; a track's mean ReID embedding is matched
+# against the identities seen recently on any camera.
+global_id:
+  similarity_threshold: 0.45           # Cosine a track must reach to join an existing identity (higher = stricter).
+                                       # ⚠️ TRACE tuned 0.45 WITH per-camera embedding centering, which is not
+                                       #    implemented here; its guidance without centering is ~0.40. Sweep on your footage.
+  reidentify_within_sec: 600.0         # A person seen again within this window keeps their id; later they are a new person.
+
+  # When does a track get an id? Two moments:
+  #   while visible → after checkpoint_frames embedded frames (label appears mid-track)
+  #   when lost     → its remaining frames are folded in; a track that ends BEFORE its
+  #                   first checkpoint asks once at loss, if it has ≥ min_frames_before_id_assign
+  #                   frames — shorter ones (a few-frame flicker) end without an id.
+  # Keep min_frames_before_id_assign below checkpoint_frames.
+  checkpoint_frames: 40                # ≈ 1.3 s at 30 fps
+  min_frames_before_id_assign: 10
+
+  # The checkpoint names a person from their first seconds on screen — usually a poor
+  # view. When the track ends its FULL evidence is re-scored, and it moves to another
+  # identity if that one wins by `margin`. Off = the first answer is final.
+  revise_at_loss:
+    enabled: true
+    margin: 0.05

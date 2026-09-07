@@ -40,10 +40,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._matching import greedy_match_min as _greedy_match
-from ._matching import hungarian_match
-from ._matching import iou_matrix as _iou_matrix
-from ._matching import xyxy_to_cxcywh as _xyxy_to_cxcywh
+from .matching import greedy_match_min as _greedy_match
+from .matching import hungarian_match
+from .matching import iou_matrix as _iou_matrix
+from .matching import xyxy_to_cxcywh as _xyxy_to_cxcywh
 from .base import (
     AppearanceTracker,
     FramePlan,
@@ -55,7 +55,7 @@ from .base import (
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from ..reid import ReIDBackend
+    from ..reid.base import ReIDBackend
     from ..schemas import Detection, Track
 
 

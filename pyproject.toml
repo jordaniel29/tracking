@@ -1,7 +1,7 @@
 [project]
 name = "pia-tracking"
 version = "0.1.0"
-description = "Single-camera person detection + ReID + tracking (YOLO26 + CLIP-ReID + BoostTrack++)"
+description = "Person detection + ReID + tracking, single- or multi-camera with shared global ids (YOLO26 + CLIP-ReID + BoostTrack++)"
 # 3.12 exactly: the pinned numpy<2 and the torch cu124 wheels have no 3.13+ builds.
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -23,6 +23,8 @@ dependencies = [
 trt = ["tensorrt>=10.0,<11"]
 # Downloading the ONNX artefacts from Hugging Face.
 hf = ["huggingface_hub>=0.25"]
+# tests/ — global-id decision rules and worker policy on synthetic embeddings; no models.
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
