@@ -1,4 +1,4 @@
-"""Loading config/tracking.yaml."""
+"""Loading a config yaml (config/tracking_general.yaml by default)."""
 
 from __future__ import annotations
 

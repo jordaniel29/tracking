@@ -28,8 +28,8 @@ MODELS: dict[str, ModelSpec] = {
         max_shape=(32, 3, 256, 128),
         hub_repo=HF_REPO,
     ),
-    # Fine-tuned on "combined + scenario 1-5" (TRACE's default.yaml engine);
-    # same input profile as the stock person model.
+    # Fine-tuned on "combined + scenario 1-5"; same input profile as the stock
+    # person model.
     "clipreid_person_ft_aihub": ModelSpec(
         onnx_filename="combined+scenario1-5_clipreid_ViT-B-16_20.onnx",
         engine_filename="combined+scenario1-5_clipreid_ViT-B-16_20.fp16.engine",

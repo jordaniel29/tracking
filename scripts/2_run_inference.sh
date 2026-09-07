@@ -5,7 +5,7 @@
 #   MODE=single bash scripts/2_run_inference.sh assets/data               # each clip on its own
 #   bash scripts/2_run_inference.sh assets/data/clip.mp4                  # one file
 #   for d in assets/data/03_scenarios/scenario_*; do bash scripts/2_run_inference.sh "$d"; done
-#   MODE=render OUT=runs/compare/trace_ft/scenario_01 bash scripts/2_run_inference.sh assets/data/03_scenarios/scenario_01
+#   MODE=render OUT=runs/scenario_01 bash scripts/2_run_inference.sh assets/data/03_scenarios/scenario_01   # re-draw an existing run
 #
 # Env: MODE (multi | single | render, default multi) · DEVICE (default cuda:0)
 #      OUT (default runs/<input name>) · CONFIG · EXTRA (extra infer.py flags, e.g. "--final-labels")
@@ -25,7 +25,7 @@ fi
 TARGET="${1:-assets/data}"
 MODE="${MODE:-multi}"
 DEVICE="${DEVICE:-cuda:0}"
-CONFIG="${CONFIG:-config/tracking.yaml}"
+CONFIG="${CONFIG:-config/tracking_general.yaml}"
 name="$(basename "${TARGET%.*}")"
 OUT="${OUT:-runs/$name}"
 

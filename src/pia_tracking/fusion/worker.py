@@ -1,6 +1,6 @@
 """``CameraWorker`` — one camera's tracks, fed to the shared ``GlobalIDService``.
 
-TRACE's ``PipelineWorker`` reduced to what offline video needs. Per frame:
+Per frame:
 
     TrackingPipeline.process_frame        detect → embed → associate (local ids)
     tracker.frame_embeddings()            the ReID vectors the tracker already
@@ -17,10 +17,9 @@ TRACE's ``PipelineWorker`` reduced to what offline video needs. Per frame:
 The worker owns the local → global map. Every ``Track`` it emits carries
 ``global_id`` — None until assigned, so a label can fall back to the local id.
 
-TRACE runs one asyncio task per camera against the shared service. Here the
-caller interleaves cameras frame by frame (``camera.round_robin``): the same
-causal order — an id decision only ever sees identities from its past — in one
-process with one copy of each model.
+The caller interleaves cameras frame by frame (``camera.round_robin``), so an
+id decision only ever sees identities from its past — the causal order of one
+live worker per camera, in one process with one copy of each model.
 """
 
 from __future__ import annotations

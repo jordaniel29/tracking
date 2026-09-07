@@ -3,7 +3,7 @@
 Package map — one folder per stage of the pipeline:
 
     schemas.py    ``Detection`` / ``Track`` — the data contracts everything passes around
-    config.py     ``load_config`` — config/tracking.yaml → dict
+    config.py     ``load_config`` — config yaml → dict
     camera/       video sources (discovery, opening, shared clock) + round-robin frame sync
     detection/    detector factory (YOLO26) + output normalisation
     reid/         ``ReIDBackend`` interface + embedder factory (CLIP-ReID)

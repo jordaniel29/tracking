@@ -1,0 +1,99 @@
+# Default config: detector + ReID + tracker, plus cross-camera global ids (multi mode).
+# Stock CLIP-ReID model. config/tracking_ft.yaml is the same profile with the
+# fine-tuned ReID model.
+#
+# Frame-count knobs (max_age, checkpoint_frames, min_frames_before_id_assign) are
+# frame counts, not seconds — at 30 fps max_age 75 is 2.5 s.
+
+# ── Detector — YOLO26-L v6.3 FP16 TensorRT engine, person only ─────────────
+detector:
+  backend: yolo26
+  model: yolo26l_v6.3.fp16.engine
+  weights_dir: ./assets/models
+  device: cuda:0
+  conf: 0.4                            # detection confidence; higher = fewer weak boxes
+  iou: 0.5                             # NMS IoU
+  imgsz: 640                           # ⚠️ cannot be raised against a built TRT engine — rebuild with a wider profile
+  min_box_size: 16                     # drop boxes with a side below this (px)
+  target_classes:
+    person: [0]
+
+# ── ReID — stock CLIP-ReID person model (ViT-B/16, 768-d, L2-normalised) ───
+# Fused into the tracker's association cost and used for cross-camera ids.
+# Remove this block (or pass --no-reid in single mode) to track on geometry alone.
+# The global_id thresholds below were tuned with this engine.
+reid:
+  person:
+    backend: clip_reid
+    clip_reid:
+      engine_path: ./assets/models/clipreid_person.fp16.engine
+      backbone: ViT-B-16
+      device: cuda:0
+      input_size: [256, 128]           # 256x128 crops
+      stride: 12
+
+# ── Tracker (per camera) — BoostTrack++, appearance-heavy ───────────────────
+# ⚠️ These gates are tuned to THIS detector's confidence distribution; re-tune if it changes.
+tracker:
+  type: boost_track
+  params:
+    # --- Core association ---
+    det_thresh: 0.5                    # min confidence to associate a detection
+    new_track_thresh: 0.9              # ⭐ min confidence to SPAWN a new track (the recall knob)
+    min_hits: 3                        # frames before a new track is reported
+    max_age: 75                        # frames a lost track survives without a match (2.5 s at 30 fps)
+
+    # --- Appearance & geometry ---
+    sim_threshold: 0.45                # appearance-match acceptance gate
+    iou_floor: 0.05                    # minimum geometric overlap to consider a match
+    appearance_weight: 0.9             # ReID's share of the cost: 0 = motion only, 1 = appearance only
+    ema_alpha: 0.9                     # smoothing of the per-track appearance feature
+
+    # --- BoostTrack++ tuning ---
+    use_sb: true
+    use_mhd: true
+    use_mhd_gate: false
+    mhd_gate: 9.4877
+    use_shape: true
+    use_tai: true                      # track-aware init: suppress duplicate spawns
+    tai_thr: 0.65
+    use_vt: true
+    soft_alpha: 0.65
+    soft_q: 1.5
+    vt_beta_high: 0.95
+    vt_beta_low: 0.8
+    vt_gamma: 0.0075
+
+# ── Global ID — cross-camera identity (multi mode only; ignored in single mode) ─
+# One in-memory service is shared by every camera; a track's mean ReID embedding
+# is matched against the identities seen recently on any camera.
+global_id:
+  similarity_threshold: 0.45           # cosine a track must reach to join an existing identity (higher = stricter).
+                                       # Paired with percam_norm ON; with centering OFF, ~0.40 is the better start.
+  reidentify_within_sec: 600.0         # seen again within this window → same id; later → a new person
+
+  # Per-camera mean-centering of embeddings before matching. Different people on
+  # the same camera look alike to ReID because they share the camera's colour
+  # balance / exposure / "everyone wears dark clothes" bias; subtracting the
+  # camera's running mean embedding removes that shared part. The subtraction is
+  # shrunk toward zero while a camera has little evidence (prior_weight frames ≈
+  # half strength), so cold-start tracklets pass through nearly unchanged.
+  percam_norm:
+    enabled: true
+    prior_weight: 200.0
+
+  # When does a track get an id? Two moments:
+  #   while visible → after checkpoint_frames embedded frames (label appears mid-track)
+  #   when lost     → its remaining frames are folded in; a track that ends BEFORE its
+  #                   first checkpoint asks once at loss, if it has ≥ min_frames_before_id_assign
+  #                   frames — shorter ones (a few-frame flicker) end without an id.
+  # Keep min_frames_before_id_assign below checkpoint_frames.
+  checkpoint_frames: 40                # ≈ 1.3 s at 30 fps
+  min_frames_before_id_assign: 10
+
+  # The checkpoint names a person from their first seconds on screen — usually a poor
+  # view. When the track ends its FULL evidence is re-scored, and it moves to another
+  # identity if that one wins by `margin`. Off = the first answer is final.
+  revise_at_loss:
+    enabled: true
+    margin: 0.05

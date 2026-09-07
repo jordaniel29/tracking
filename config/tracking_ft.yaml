@@ -1,0 +1,77 @@
+# Same profile as config/tracking_general.yaml (the default) with the fine-tuned
+# CLIP-ReID model instead of the stock one. Only the `reid:` block differs.
+#
+# The model was fine-tuned on "combined + scenario 1-5". ⚠️ If those are the
+# scenarios in assets/data/03_scenarios, results on scenario_01..05 are in-sample
+# and will flatter this model; judge it on scenario_06 onwards.
+
+# ── Detector — YOLO26-L v6.3 FP16 TensorRT engine, person only ─────────────
+detector:
+  backend: yolo26
+  model: yolo26l_v6.3.fp16.engine
+  weights_dir: ./assets/models
+  device: cuda:0
+  conf: 0.4
+  iou: 0.5
+  imgsz: 640                           # ⚠️ cannot be raised against a built TRT engine
+  min_box_size: 16
+  target_classes:
+    person: [0]
+
+# ── ReID — fine-tuned CLIP-ReID person model (ViT-B/16, 768-d) ─────────────
+# Not provisioned by scripts/1_download_models.sh. Build it on this GPU (TRT
+# engines are not portable) with
+#   piaspace_clip_reid.engine.ensure_engine_by_filename(
+#       "combined+scenario1-5_clipreid_ViT-B-16_20.fp16.engine",
+#       weights_dir="assets/models", token=HF_TOKEN)
+reid:
+  person:
+    backend: clip_reid
+    clip_reid:
+      engine_path: ./assets/models/combined+scenario1-5_clipreid_ViT-B-16_20.fp16.engine
+      backbone: ViT-B-16
+      device: cuda:0
+      input_size: [256, 128]
+      stride: 12
+
+# ── Tracker (per camera) — BoostTrack++, appearance-heavy ───────────────────
+# percam_norm ON + similarity_threshold 0.45 were validated on THIS tracker —
+# change them together, not independently. Gates are detector-coupled: if the
+# detector changes, re-tune. Knobs are explained in tracking_general.yaml.
+tracker:
+  type: boost_track
+  params:
+    det_thresh: 0.5
+    new_track_thresh: 0.9
+    min_hits: 3
+    max_age: 75                        # 2.5 s at 30 fps
+    sim_threshold: 0.45
+    iou_floor: 0.05
+    appearance_weight: 0.9
+    ema_alpha: 0.9
+    use_sb: true
+    use_mhd: true
+    use_mhd_gate: false
+    mhd_gate: 9.4877
+    use_shape: true
+    use_tai: true
+    tai_thr: 0.65
+    use_vt: true
+    soft_alpha: 0.65
+    soft_q: 1.5
+    vt_beta_high: 0.95
+    vt_beta_low: 0.8
+    vt_gamma: 0.0075
+
+# ── Global ID — cross-camera identity (multi mode only) ─────────────────────
+global_id:
+  similarity_threshold: 0.45           # paired with percam_norm ON; ~0.40 is the better start if you turn it off
+  reidentify_within_sec: 600.0
+  percam_norm:
+    enabled: true
+    prior_weight: 200.0
+  checkpoint_frames: 40
+  min_frames_before_id_assign: 10
+  revise_at_loss:
+    enabled: true
+    margin: 0.05

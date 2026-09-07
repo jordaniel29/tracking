@@ -47,5 +47,5 @@ engine_path = ensure_engine("clipreid_person", weights_dir="./weights")
 
 In this repository the embedder is consumed by the tracker's appearance
 channel — its `embed(crops_bgr)` + `embed_dim` surface satisfies
-`pia_tracking.reid.ReIDBackend` directly (see `config/tracking.yaml`
+`pia_tracking.reid.ReIDBackend` directly (see `config/tracking_general.yaml`
 at the repository root for the config actually used).

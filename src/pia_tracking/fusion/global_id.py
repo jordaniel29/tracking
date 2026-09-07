@@ -1,7 +1,6 @@
 """Cross-camera identity: ``Tracklet`` → ``global_id``.
 
-In-memory, single-process reduction of TRACE's Progressive-HAC Global ID
-service to the decision rule in the design diagram:
+In-memory, single-process service implementing one decision rule:
 
     tracklet arrives from any camera
       ├─ this (camera, track) already has a global_id
@@ -18,11 +17,15 @@ Each identity keeps its centroid as the frame-count-weighted SUM of the
 tracklet embeddings and normalises on read, so the result does not depend on
 the order the cameras deliver in.
 
-Deliberately not carried over from TRACE: Milvus persistence, Redis events,
-per-camera mean-centering, exemplar set-matching, camera-topology transit
-gating, rehydrate. Cameras are treated as overlapping — a person may be seen on
-two cameras at the same instant — so appearance is the only cross-camera
-discriminator and the recency window is the only temporal one.
+With ``percam_norm`` enabled every embedding is mean-centred per camera before
+matching (see :mod:`.percam_norm`); the whole identity space then lives in the
+centred coordinates, which pairs with ``similarity_threshold`` ~0.45 (vs ~0.40
+without).
+
+Cameras are treated as overlapping — a person may be seen on two cameras at the
+same instant — so appearance is the only cross-camera discriminator and the
+recency window is the only temporal one. There is no persistence: identities
+live for one run.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from .percam_norm import DEFAULT_PRIOR_WEIGHT, PendingObservation, PerCameraNormalizer
 from .tracklet import Tracklet, l2_normalize
 
 logger = logging.getLogger("pia_tracking.fusion.global_id")
@@ -41,6 +45,12 @@ logger = logging.getLogger("pia_tracking.fusion.global_id")
 DEFAULT_SIMILARITY_THRESHOLD = 0.45
 DEFAULT_REIDENTIFY_WITHIN_SEC = 600.0
 DEFAULT_REVISE_MARGIN = 0.05
+# Recommended gates: centering shifts the similarity scale up, so its gate sits
+# above the baseline one. The midpoint flags a config that flipped one knob
+# without the other.
+BASELINE_GATE = 0.40  # percam_norm off
+CENTERING_GATE = 0.45  # percam_norm on
+_COUPLED_GATE_BOUNDARY = (BASELINE_GATE + CENTERING_GATE) / 2
 
 
 @dataclass
@@ -162,6 +172,11 @@ class GlobalIDService:
             frames, re-score its FULL evidence against every identity and move
             it if another wins by ``revise_margin``.
         revise_margin: see above.
+        percam_norm: mean-centre embeddings per camera before matching
+            (:mod:`.percam_norm`). Pair with ``similarity_threshold`` ~0.45;
+            off pairs with ~0.40. A mis-paired config is warned about.
+        percam_prior_weight: frames of evidence before centering reaches half
+            strength.
     """
 
     def __init__(
@@ -171,11 +186,15 @@ class GlobalIDService:
         reidentify_within_sec: float = DEFAULT_REIDENTIFY_WITHIN_SEC,
         revise_at_loss: bool = True,
         revise_margin: float = DEFAULT_REVISE_MARGIN,
+        percam_norm: bool = False,
+        percam_prior_weight: float = DEFAULT_PRIOR_WEIGHT,
     ) -> None:
         self._similarity_threshold = float(similarity_threshold)
         self._reidentify_within_sec = float(reidentify_within_sec)
         self._revise_at_loss = bool(revise_at_loss)
         self._revise_margin = float(revise_margin)
+        self._percam = PerCameraNormalizer(percam_prior_weight) if percam_norm else None
+        self._warn_coupled_config()
         self._identities: dict[int, Identity] = {}
         self._next_id = 1
         # (camera_id, track_id) → global_id, and the bookkeeping that lets a
@@ -187,19 +206,43 @@ class GlobalIDService:
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any] | None) -> "GlobalIDService":
-        """Build from the ``global_id:`` block of config/tracking.yaml."""
+        """Build from the ``global_id:`` block of the config yaml."""
         cfg = cfg or {}
         revise = cfg.get("revise_at_loss") or {}
+        percam = cfg.get("percam_norm") or {}
+        if not isinstance(percam, dict):
+            raise ValueError(f"global_id.percam_norm must be a mapping, got {percam!r} — use `percam_norm: {{enabled: true}}`")
         return cls(
             similarity_threshold=cfg.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD),
             reidentify_within_sec=cfg.get("reidentify_within_sec", DEFAULT_REIDENTIFY_WITHIN_SEC),
             revise_at_loss=revise.get("enabled", True),
             revise_margin=revise.get("margin", DEFAULT_REVISE_MARGIN),
+            percam_norm=bool(percam.get("enabled", False)),
+            percam_prior_weight=float(percam.get("prior_weight", DEFAULT_PRIOR_WEIGHT)),
         )
+
+    def _warn_coupled_config(self) -> None:
+        gate = self._similarity_threshold
+        if self._percam is not None and gate < _COUPLED_GATE_BOUNDARY:
+            logger.warning(
+                "global_id percam_norm ENABLED but similarity_threshold=%.3f is in the baseline range "
+                "(< %.3f) — centering pairs with ~%.2f; matching may over-fragment",
+                gate, _COUPLED_GATE_BOUNDARY, CENTERING_GATE,
+            )
+        elif self._percam is None and gate >= _COUPLED_GATE_BOUNDARY:
+            logger.warning(
+                "global_id percam_norm DISABLED but similarity_threshold=%.3f is in the centering range "
+                "(>= %.3f) — the baseline optimum is ~%.2f; matching may under-link",
+                gate, _COUPLED_GATE_BOUNDARY, BASELINE_GATE,
+            )
 
     @property
     def similarity_threshold(self) -> float:
         return self._similarity_threshold
+
+    @property
+    def percam_norm(self) -> PerCameraNormalizer | None:
+        return self._percam
 
     @property
     def identities(self) -> dict[int, Identity]:
@@ -220,6 +263,13 @@ class GlobalIDService:
         if key in self._assigned:
             return self._assign_existing(key, tracklet, emb, sig)
 
+        # First delivery: centre into the per-camera space before it is matched
+        # or folded into any identity. prepare() is pure; commit() below folds
+        # the raw vector into mu_cam once the assignment is final.
+        pending = self._prepare(tracklet, emb)
+        if pending is not None:
+            emb = pending.centered
+
         matched = self._best_match(tracklet, emb)
         if matched is not None:
             ident, sim = matched
@@ -236,10 +286,17 @@ class GlobalIDService:
                 "global_id new gid=%d cam=%s track=%d frames=%d",
                 ident.global_id, tracklet.camera_id, tracklet.track_id, tracklet.frame_count,
             )
+        if pending is not None:
+            pending.commit()
         self._assigned[key] = ident.global_id
         self._last_segment[key] = sig
         self._evidence[key] = (emb * tracklet.frame_count, tracklet.frame_count, tracklet.first_seen)
         return ident.global_id
+
+    def _prepare(self, tracklet: Tracklet, emb: np.ndarray) -> PendingObservation | None:
+        if self._percam is None:
+            return None
+        return self._percam.prepare(tracklet.camera_id, emb, tracklet.frame_count)
 
     def _assign_existing(
         self,
@@ -263,8 +320,13 @@ class GlobalIDService:
             )
             return gid
 
+        # New evidence → centre it into the space the identities live in.
+        pending = self._prepare(tracklet, emb)
+        if pending is not None:
+            emb = pending.centered
+
         if self._revise_at_loss:
-            moved = self._maybe_revise(key, gid, ident, tracklet, emb, sig)
+            moved = self._maybe_revise(key, gid, ident, tracklet, emb, sig, pending)
             if moved is not None:
                 return moved
 
@@ -272,6 +334,8 @@ class GlobalIDService:
         self._last_segment[key] = sig
         ev_sum, ev_w, ev_first = self._evidence[key]
         self._evidence[key] = (ev_sum + emb * tracklet.frame_count, ev_w + tracklet.frame_count, ev_first)
+        if pending is not None:
+            pending.commit()
         self.stats.accumulated += 1
         logger.info(
             "global_id accumulated gid=%d cam=%s track=%d +%d frames (weight=%d)",
@@ -287,10 +351,12 @@ class GlobalIDService:
         tracklet: Tracklet,
         emb: np.ndarray,
         sig: tuple[datetime, datetime, int],
+        pending: PendingObservation | None = None,
     ) -> int | None:
         """Re-score the track's FULL evidence with the track detached from its
         identity. Returns the new gid if another identity wins by the margin,
-        else None (caller accumulates as usual)."""
+        else None (caller accumulates as usual). ``emb`` is already centred when
+        percam_norm is on; ``pending`` is committed here if the track moves."""
         ev_sum, ev_w, ev_first = self._evidence[key]
         full_sum = ev_sum + emb * tracklet.frame_count
         full_w = ev_w + tracklet.frame_count
@@ -315,6 +381,8 @@ class GlobalIDService:
         self._assigned[key] = target.global_id
         self._last_segment[key] = sig
         self._evidence[key] = (full_sum, full_w, ev_first)
+        if pending is not None:
+            pending.commit()
         self.stats.revised += 1
         logger.info(
             "global_id revised cam=%s track=%d gid %d -> %d (sim %.3f vs %s, frames=%d)",
@@ -378,6 +446,15 @@ class GlobalIDService:
             "similarity_threshold": self._similarity_threshold,
             "reidentify_within_sec": self._reidentify_within_sec,
             "revise_at_loss": {"enabled": self._revise_at_loss, "margin": self._revise_margin},
+            "percam_norm": (
+                {
+                    "enabled": True,
+                    "prior_weight": self._percam.prior_weight,
+                    "frames_per_camera": {c: self._percam.evidence(c) for c in self._percam.cameras()},
+                }
+                if self._percam is not None
+                else {"enabled": False}
+            ),
             "n_identities": len(identities),
             "n_multi_camera": sum(len(i["cameras"]) > 1 for i in identities),
             **asdict(self.stats),

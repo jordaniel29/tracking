@@ -18,7 +18,7 @@
                e.g. for a run made with --no-video. Multi-camera runs get G-<gid> labels
                from global_ids.json, single-camera runs local ids.
 
-    python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/compare/trace_ft/scenario_01
+    python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
 
 Files matching --exclude (default "grid_*", a composite view) are skipped in every mode.
 
@@ -94,7 +94,10 @@ def _add_io_args(parser: argparse.ArgumentParser) -> None:
         help="Filename patterns to skip (e.g. a composite grid view).",
     )
     parser.add_argument("--out", type=Path, required=True, help="Output directory.")
-    parser.add_argument("--config", type=Path, default=Path("config/tracking.yaml"))
+    parser.add_argument(
+        "--config", type=Path, default=Path("config/tracking_general.yaml"),
+        help="Model/tracker/global-id settings. config/tracking_ft.yaml swaps in the fine-tuned ReID model.",
+    )
     parser.add_argument("--device", type=str, default=None, help="e.g. cuda:0. Overrides config.")
     parser.add_argument("--max-frames", type=int, default=None, help="Cap frames processed per video.")
     parser.add_argument("--no-video", action="store_true", help="Skip MP4 rendering; write MOT files only.")

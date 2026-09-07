@@ -42,7 +42,8 @@ assets/
   models/       model artefacts (.onnx delivered, .engine built here) — not committed
   data/         input videos — not committed
 config/
-  tracking.yaml detector + reid + tracker settings, commented per knob
+  tracking_general.yaml   default — detector + reid + tracker + global-id settings, commented per knob
+  tracking_ft.yaml        same profile with the fine-tuned ReID model (only the reid block differs)
 .env.example    template for .env — HF_TOKEN + optional runtime defaults
 scripts/
   0_setup_env.sh          conda env + dependencies + GPU/TensorRT verification
@@ -51,7 +52,7 @@ scripts/
 src/
   pia_tracking/           one folder per stage — data flows camera → detection → tracking → fusion → utils
     schemas.py            Detection / Track — the data contracts everything passes around
-    config.py             tracking.yaml → dict
+    config.py             config yaml → dict
     camera/               video sources (discovery, opening, shared clock) + round-robin frame sync
     detection/            detector factory (YOLO26) + output normalisation
     reid/                 ReIDBackend interface + embedder factory (CLIP-ReID)
@@ -80,7 +81,7 @@ python infer.py --mode single --video clip.mp4 --out runs/demo --no-reid # geome
 
 # render: draw an existing run's predictions onto its source videos (no models, CPU only) —
 # e.g. to get MP4s for a run made with --no-video. --out is that run's directory.
-python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/compare/trace_ft/scenario_01
+python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
 
 # both tracking modes
 python infer.py --videos-dir DIR --out OUT --no-video          # MOT files only
@@ -154,15 +155,19 @@ Additional output in multi mode:
 <out>/run_summary.json          also: per-camera fps + identity counts
 ```
 
-Ported from the TRACE pipeline without its Milvus/Redis persistence, per-camera
-embedding centering, exemplar set-matching and camera-topology gating. Note that
-TRACE tuned `similarity_threshold: 0.45` *with* per-camera centering on; its own
-guidance without it is ~0.40 — sweep the threshold on your footage.
+Before matching, embeddings are mean-centred per camera (`global_id.percam_norm`,
+on by default): different people on one camera share its colour balance,
+exposure and "everyone wears dark clothes" bias, and subtracting the camera's
+running mean removes that shared component so the gate separates people rather
+than cameras. `similarity_threshold: 0.45` is paired with centering on; with it
+off, ~0.40 is the better starting point.
 
 ## Configuration
 
-All settings live in [`config/tracking.yaml`](config/tracking.yaml), commented
-per knob. Two things to know before changing it:
+All settings live in [`config/tracking_general.yaml`](config/tracking_general.yaml)
+(the default), commented per knob; [`config/tracking_ft.yaml`](config/tracking_ft.yaml)
+is the same profile with the fine-tuned ReID model — pass it with `--config`
+(or `CONFIG=` for the wrapper). Two things to know before changing them:
 
 - `detector.imgsz` cannot be raised against a built TRT engine — rebuild the
   engine with a wider profile instead.

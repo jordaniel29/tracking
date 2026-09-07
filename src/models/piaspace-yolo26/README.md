@@ -34,5 +34,5 @@ detector:
 ```
 
 In this repository the detector is consumed by `pia_tracking.pipeline`
-(see `config/tracking.yaml` at the repository root for the config actually
+(see `config/tracking_general.yaml` at the repository root for the config actually
 used).

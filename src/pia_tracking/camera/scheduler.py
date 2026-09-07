@@ -35,15 +35,20 @@ class Exhausted:
     ts: datetime
 
 
+def _next(src: VideoSource, max_frames: int | None) -> Frame | Exhausted:
+    item = None if (max_frames is not None and src.frames_read >= max_frames) else src.read()
+    if item is None:
+        src.close()
+        return Exhausted(src, src.ts())
+    idx, image = item
+    return Frame(src, idx, image, src.ts(idx))
+
+
 def round_robin(sources: Iterable[VideoSource], *, max_frames: int | None = None) -> Iterator[Frame | Exhausted]:
     open_sources = list(sources)
     while open_sources:
         for src in list(open_sources):
-            item = None if (max_frames is not None and src.frames_read >= max_frames) else src.read()
-            if item is None:
-                yield Exhausted(src, src.ts())
-                src.close()
+            event = _next(src, max_frames)
+            if isinstance(event, Exhausted):
                 open_sources.remove(src)
-                continue
-            idx, image = item
-            yield Frame(src, idx, image, src.ts(idx))
+            yield event
