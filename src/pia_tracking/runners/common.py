@@ -23,6 +23,9 @@ class RunOptions:
     # multi only
     checkpoints: bool = True  # mid-track id assignment after checkpoint_frames
     final_labels: bool = False  # re-render the MP4 with the final ids after tracking
+    # grid mode only
+    grid_cols: int | None = None  # None → as square as possible
+    grid_width: int = 1920  # total width of the mosaic
 
 
 LabelFn = Callable[[Track], str]

@@ -83,6 +83,11 @@ python infer.py --mode single --video clip.mp4 --out runs/demo --no-reid # geome
 # e.g. to get MP4s for a run made with --no-video. --out is that run's directory.
 python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
 
+# grid: one <out>/grid.mp4 with every camera tiled and time-aligned — the clearest way to see
+# cross-camera identity (same person = same colour + G-<n> in every cell at the same instant)
+python infer.py --mode grid --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
+python infer.py --mode grid --videos-dir DIR --out OUT --grid-cols 5 --grid-width 2560   # one row, larger
+
 # both tracking modes
 python infer.py --videos-dir DIR --out OUT --no-video          # MOT files only
 python infer.py --videos-dir DIR --out OUT --show-all-dets     # also dump raw pre-tracking detections
@@ -153,6 +158,7 @@ Additional output in multi mode:
 <out>/preds/<cam>_global.txt    MOT rows with the global id (unlabelled tracks omitted)
 <out>/global_ids.json           identities → (camera, local id) members; local→global map per camera
 <out>/run_summary.json          also: per-camera fps + identity counts
+<out>/grid.mp4                  all cameras tiled into one video (`--mode grid`)
 ```
 
 Before matching, embeddings are mean-centred per camera (`global_id.percam_norm`,

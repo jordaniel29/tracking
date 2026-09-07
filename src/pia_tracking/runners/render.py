@@ -24,6 +24,16 @@ logger = logging.getLogger("pia_tracking.runners.render")
 MOTRow = tuple[int, float, float, float, float, float]  # track_id, x, y, w, h, conf
 
 
+def load_global_id_map(out_dir: Path) -> dict[str, dict[int, int]] | None:
+    """``{camera_id: {local id: global id}}`` from a multi-camera run's
+    ``global_ids.json``, or None for a single-camera run (no such file)."""
+    path = out_dir / "global_ids.json"
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text()).get("local_to_global") or {}
+    return {cam: {int(k): v for k, v in m.items()} for cam, m in raw.items()}
+
+
 def read_mot(path: Path) -> dict[int, list[MOTRow]]:
     """``frame_idx → rows`` from a MOTChallenge file written by MOTWriter."""
     rows: dict[int, list[MOTRow]] = {}
@@ -87,8 +97,7 @@ def run_render(videos: list[Path], *, out_dir: Path, opts: RunOptions) -> int:
     preds_dir = out_dir / "preds"
     if not preds_dir.is_dir():
         raise FileNotFoundError(f"{preds_dir} not found — --out must be an existing run directory")
-    gid_file = out_dir / "global_ids.json"
-    local_to_global = json.load(open(gid_file)).get("local_to_global") if gid_file.is_file() else None
+    local_to_global = load_global_id_map(out_dir)
 
     skipped = 0
     for video in videos:
@@ -97,9 +106,7 @@ def run_render(videos: list[Path], *, out_dir: Path, opts: RunOptions) -> int:
             logger.warning("no predictions for %s (%s missing) — skipped", video.name, mot.name)
             skipped += 1
             continue
-        gid_map = None
-        if local_to_global is not None:
-            gid_map = {int(k): v for k, v in local_to_global.get(video.stem, {}).items()}
+        gid_map = None if local_to_global is None else local_to_global.get(video.stem, {})
         source = open_source(video)
         try:
             n = render_video(

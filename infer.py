@@ -17,8 +17,12 @@
                --videos-dir/--video its source videos) onto the frames and write the MP4s —
                e.g. for a run made with --no-video. Multi-camera runs get G-<gid> labels
                from global_ids.json, single-camera runs local ids.
+--mode grid    Like render, but writes ONE <out>/grid.mp4 with every camera tiled and
+               time-aligned — the view where cross-camera identity is obvious: the same
+               person is the same colour and G-<n> in every cell at the same instant.
 
     python infer.py --mode render --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
+    python infer.py --mode grid   --videos-dir assets/data/03_scenarios/scenario_01 --out runs/scenario_01
 
 Files matching --exclude (default "grid_*", a composite view) are skipped in every mode.
 
@@ -32,6 +36,7 @@ Writes:
     <out>/preds/<stem>_dets.txt    raw pre-tracking detections (--show-all-dets)
     <out>/global_ids.json          identities → (camera, local id) members; local→global map (multi)
     <out>/run_summary.json         config used + per-clip throughput (+ identity counts in multi)
+    <out>/grid.mp4                 all cameras tiled into one video (--mode grid)
 
 GPU selection: use `--device cuda:N`. Do NOT rely on a shell `CUDA_VISIBLE_DEVICES` —
 Ultralytics rewrites that variable internally when it parses the device string.
@@ -55,7 +60,7 @@ except ModuleNotFoundError:
 
 from pia_tracking import build_detector, build_reid, load_config
 from pia_tracking.camera import DEFAULT_EXCLUDE, discover_videos
-from pia_tracking.runners import RunOptions, run_multi, run_render, run_single
+from pia_tracking.runners import RunOptions, run_grid, run_multi, run_render, run_single
 
 logger = logging.getLogger("infer")
 
@@ -67,10 +72,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--mode", choices=["multi", "single", "render"], default="multi",
+        "--mode", choices=["multi", "single", "render", "grid"], default="multi",
         help="multi: every video is a camera, tracks linked across cameras by global id. "
         "single: each clip on its own with local ids. "
-        "render: no models — draw an existing run's predictions (in --out) onto the videos.",
+        "render: no models — draw an existing run's predictions (in --out) onto the videos. "
+        "grid: like render, but one <out>/grid.mp4 with every camera tiled.",
     )
     _add_io_args(parser)
     _add_mode_args(parser)
@@ -80,8 +86,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--no-reid is single-mode only: global ids link on appearance")
     if args.mode != "multi" and (args.no_checkpoints or args.final_labels):
         parser.error("--no-checkpoints / --final-labels apply to --mode multi only")
-    if args.mode == "render" and (args.no_reid or args.no_video or args.show_all_dets):
-        parser.error("--mode render only draws: --no-reid / --no-video / --show-all-dets do not apply")
+    if args.mode in ("render", "grid") and (args.no_reid or args.no_video or args.show_all_dets):
+        parser.error(f"--mode {args.mode} only draws: --no-reid / --no-video / --show-all-dets do not apply")
+    if args.mode != "grid" and (args.grid_cols is not None or args.grid_width != 1920):
+        parser.error("--grid-cols / --grid-width apply to --mode grid only")
     return args
 
 
@@ -112,6 +120,13 @@ def _add_mode_args(parser: argparse.ArgumentParser) -> None:
         "--no-reid", action="store_true",
         help="Track on geometry alone (faster, more ID switches). single only.",
     )
+    grid = parser.add_argument_group("grid mode")
+    grid.add_argument(
+        "--grid-cols", type=int, default=None,
+        help="Cells per row (default: as square as possible — 4 cameras 2x2, 5 cameras 2x3).",
+    )
+    grid.add_argument("--grid-width", type=int, default=1920, help="Total width of the mosaic in px.")
+
     multi = parser.add_argument_group("multi mode")
     multi.add_argument(
         "--no-checkpoints", action="store_true",
@@ -129,11 +144,14 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=args.log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     try:
         videos = discover_videos(videos=args.video, videos_dir=args.videos_dir, exclude=args.exclude)
-        if args.mode == "render":
-            logger.info("start mode=render videos=%d run=%s", len(videos), args.out)
-            return run_render(
-                videos, out_dir=args.out, opts=RunOptions(max_frames=args.max_frames, show_conf=args.show_conf)
+        if args.mode in ("render", "grid"):
+            logger.info("start mode=%s videos=%d run=%s", args.mode, len(videos), args.out)
+            opts = RunOptions(
+                max_frames=args.max_frames, show_conf=args.show_conf,
+                grid_cols=args.grid_cols, grid_width=args.grid_width,
             )
+            run = run_render if args.mode == "render" else run_grid
+            return run(videos, out_dir=args.out, opts=opts)
 
         config = load_config(args.config, args.device)
         args.out.mkdir(parents=True, exist_ok=True)
